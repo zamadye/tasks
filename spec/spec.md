@@ -454,6 +454,7 @@ Agent events:
 - `agent:message` — agent emitted a status update, progress note, or response
 - `agent:question` — agent is asking for help (triggers `task:state:question`)
 - `agent:error` — something went wrong inside the agent session
+- `agent:exit` — agent process exited (carries exit_code, signal, made_progress)
 
 Merge events:
 
@@ -548,6 +549,13 @@ for observing the agent's behavior and emitting appropriate events.
 - Some events are inferred from context (agent is waiting for user input with choices ->
   `agent:question` + `task:state:question`).
 - The session emits all events to the bus on behalf of the agent.
+
+**State materialization.** The session manager emits state-change events (e.g. `task:state:running`,
+`task:state:awaiting_merge`) to the event bus but does not directly modify task state in the
+server. A dedicated state sync loop subscribes to all `task:state:*` events and updates the
+in-memory state and persistent store accordingly. This keeps the session manager decoupled from
+the server while ensuring the API always reflects the latest state. The event log remains the
+source of truth; the store is a materialized view.
 
 ### 9.4 Agent Provider
 
@@ -683,6 +691,7 @@ The dispatcher is triggered in two ways:
 
 - `task:created` — new task is available
 - `task:state:completed`, `task:state:failed`, `task:state:cancelled` — a slot freed up
+- `task:state:awaiting_merge` — a slot freed up (session ended, §12.5)
 - `task:state:waiting` — a blocked task became unblocked
 - A `question`-state task receives an answer (human or orchestrator message)
 - `system:mode:pause`, `system:mode:play` — mode changed to one that allows dispatch
@@ -1220,20 +1229,23 @@ function start_session(session, prompt):
             agent:stdout  -> emit agent:message, check for question patterns
             agent:stderr  -> log warning
             agent:exit(0) -> emit task:state:testing or task:state:awaiting_merge
-            agent:exit(n) -> handle_failure(session, exit_code=n)
+            agent:exit(n) -> emit agent:exit {exit_code=n, signal, made_progress}
 
-function handle_failure(session, exit_code):
-    task = session.task
+# Failure handling lives in the server, not the session (see §9.3).
+# The state sync loop receives agent:exit events and calls handle_failure.
+
+function handle_failure(server, task_id, max_retries):
+    task = server.get_task(task_id)
     task.retry_count += 1
     task.last_failure_at = now()
 
-    if task.retry_count >= max_retries:
+    if task.retry_count > max_retries:
         set task.state = Failed
         emit task:state:failed
     else:
         set task.state = Waiting
         emit task:state:waiting
-        # Dispatcher will pick it up after backoff.
+        # Dispatcher picks up after backoff (§13.2).
 ```
 
 ### 18.3 Merge Queue Processing
