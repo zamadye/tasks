@@ -173,7 +173,75 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // --- 7. Spawn dispatch tick loop ---
+    // --- 7. Spawn state sync loop ---
+    //
+    // The session manager publishes state-change events (e.g. TaskStateAwaitingMerge)
+    // directly to the event bus. This loop picks them up and syncs the in-memory
+    // state + SQLite so the API returns the correct task state.
+
+    let sync_server = server.clone();
+    let max_retries = config.max_retries;
+    let mut sync_rx = server.event_bus.subscribe();
+
+    let sync_handle = tokio::spawn(async move {
+        loop {
+            match sync_rx.recv().await {
+                Ok(event) => {
+                    // Handle agent exit — retry decision (spec §18.2)
+                    if event.event_type == EventType::AgentExit {
+                        if let Err(e) =
+                            sync_server.handle_agent_failure(&event.task, max_retries).await
+                        {
+                            warn!(
+                                task_id = %event.task,
+                                error = %e,
+                                "failed to handle agent failure"
+                            );
+                        }
+                        continue;
+                    }
+
+                    let new_state = match event.event_type {
+                        EventType::TaskStateRunning => Some(models::task::TaskState::Running),
+                        EventType::TaskStateAwaitingMerge => {
+                            Some(models::task::TaskState::AwaitingMerge)
+                        }
+                        EventType::TaskStateFailed => Some(models::task::TaskState::Failed),
+                        EventType::TaskStateCompleted => {
+                            Some(models::task::TaskState::Completed)
+                        }
+                        EventType::TaskStateCancelled => {
+                            Some(models::task::TaskState::Cancelled)
+                        }
+                        EventType::TaskStateWaiting => Some(models::task::TaskState::Waiting),
+                        EventType::TaskStateBlocked => Some(models::task::TaskState::Blocked),
+                        EventType::TaskStateQuestion => Some(models::task::TaskState::Question),
+                        EventType::TaskStateTesting => Some(models::task::TaskState::Testing),
+                        EventType::TaskStateConflict => Some(models::task::TaskState::Conflict),
+                        _ => None,
+                    };
+
+                    if let Some(state) = new_state {
+                        if let Err(e) =
+                            sync_server.sync_task_state(&event.task, state).await
+                        {
+                            warn!(
+                                task_id = %event.task,
+                                error = %e,
+                                "failed to sync task state from event"
+                            );
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(skipped = n, "state sync loop lagged — some events may not have been synced");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    // --- 8. Spawn dispatch tick loop ---
 
     let dispatch_server = server.clone();
     let dispatch_session_mgr = session_manager.clone();
@@ -198,6 +266,7 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
                             | EventType::TaskStateFailed
                             | EventType::TaskStateCancelled
                             | EventType::TaskStateWaiting
+                            | EventType::TaskStateAwaitingMerge
                             | EventType::SystemModePause
                             | EventType::SystemModePlay
                         ),
@@ -273,7 +342,7 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // --- 8. Optionally spawn web server ---
+    // --- 9. Optionally spawn web server ---
 
     let web_handle = if config.web {
         let api_state = crate::web::ApiState {
@@ -286,10 +355,14 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         // otherwise just serve the API.
         let app = {
             let api_router = crate::web::router(api_state);
-            let web_dir = std::env::current_dir()
-                .unwrap_or_default()
-                .join("web")
-                .join("build");
+            let web_dir = std::env::var("TASKS_WEB_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .join("web")
+                        .join("build")
+                });
             if web_dir.exists() {
                 let serve = tower_http::services::ServeDir::new(&web_dir)
                     .fallback(tower_http::services::ServeFile::new(web_dir.join("index.html")));
@@ -308,7 +381,7 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // --- 9. Wait for shutdown (TUI or headless) ---
+    // --- 10. Wait for shutdown (TUI or headless) ---
 
     if config.tui {
         crate::tui::run_tui(server.clone(), server.event_bus.clone(), config.max_sessions).await?;
@@ -322,6 +395,7 @@ pub async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
 
     // Cancel the loops
     poll_handle.abort();
+    sync_handle.abort();
     dispatch_handle.abort();
     if let Some(h) = web_handle {
         h.abort();
