@@ -56,11 +56,11 @@ Requires `.env` with `GITHUB_TOKEN` and `ANTHROPIC_API_KEY`.
 - `web/` — SvelteKit 5 SPA with Tailwind CSS v4 + DaisyUI
 - Built output goes to `web/build/`, served by the Rust server at `/`
 - API endpoints at `/api/*`, SSE event stream at `/api/events`
-- Requires Node >= 20 to build (`nvm use 20`)
+- Uses bun as package manager
 
 ```sh
-cd web && npm install && npm run build   # build frontend
-cd web && npm run dev                    # dev mode (proxies /api to localhost:4800)
+cd web && bun install && bun run build   # build frontend
+cd web && bun run dev                    # dev mode (proxies /api to localhost:4800)
 ```
 
 ### API endpoints
