@@ -354,7 +354,7 @@ async fn handle_exit(
         )
     } else {
         (
-            events::EventType::TaskStateFailed,
+            events::EventType::AgentExit,
             serde_json::json!({
                 "exit_code": exit.code,
                 "signal": exit.signal,
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exit_nonzero_maps_to_failed() {
+    async fn exit_nonzero_maps_to_agent_exit() {
         let (bus, mut rx) = test_event_bus().await;
         let exit = runtime::protocol::AgentExitEvent {
             code: Some(1),
@@ -469,12 +469,12 @@ mod tests {
         handle_exit("task-1", &exit, false, &bus).await;
 
         let received = rx.recv().await.unwrap();
-        assert_eq!(received.event_type, events::EventType::TaskStateFailed);
+        assert_eq!(received.event_type, events::EventType::AgentExit);
         assert_eq!(received.data["exit_code"], 1);
     }
 
     #[tokio::test]
-    async fn exit_includes_progress_flag() {
+    async fn exit_nonzero_includes_progress_flag() {
         let (bus, mut rx) = test_event_bus().await;
         let exit = runtime::protocol::AgentExitEvent {
             code: Some(1),
@@ -484,7 +484,7 @@ mod tests {
         handle_exit("task-1", &exit, true, &bus).await;
 
         let received = rx.recv().await.unwrap();
-        assert_eq!(received.event_type, events::EventType::TaskStateFailed);
+        assert_eq!(received.event_type, events::EventType::AgentExit);
         assert_eq!(received.data["made_progress"], true);
     }
 }
