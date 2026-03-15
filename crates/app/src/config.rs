@@ -26,6 +26,8 @@ pub struct AppConfig {
     pub web: bool,
     /// Web server port (default: 4800).
     pub web_port: u16,
+    /// Max task retries before marking as failed (default: 3, spec §13.2).
+    pub max_retries: u32,
 }
 
 impl AppConfig {
@@ -59,6 +61,11 @@ impl AppConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(30u64);
 
+        let max_retries = std::env::var("TASKS_MAX_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+
         Ok(Self {
             data_dir,
             github_token,
@@ -74,6 +81,7 @@ impl AppConfig {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(4800),
+            max_retries,
         })
     }
 }
