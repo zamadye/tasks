@@ -4,24 +4,30 @@
 //! - Connected = human is present, questions surface for timely response.
 //! - Disconnected = autonomous mode, orchestrator makes judgment calls.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Tracks active GUI connections to determine human presence.
 pub struct PresenceTracker {
-    active_connections: AtomicUsize,
+    active_connections: Arc<AtomicUsize>,
 }
 
 impl PresenceTracker {
     pub fn new() -> Self {
         Self {
-            active_connections: AtomicUsize::new(0),
+            active_connections: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    /// A GUI client connected.
-    pub fn connect(&self) -> ConnectionGuard<'_> {
+    /// A GUI client connected. Returns a guard that decrements on drop.
+    ///
+    /// The returned guard is `'static` — it can be moved into async streams,
+    /// spawned tasks, or any context that outlives the tracker reference.
+    pub fn connect(&self) -> ConnectionGuard {
         self.active_connections.fetch_add(1, Ordering::SeqCst);
-        ConnectionGuard { tracker: self }
+        ConnectionGuard {
+            counter: self.active_connections.clone(),
+        }
     }
 
     /// Whether any GUI client is connected (human is present).
@@ -33,10 +39,6 @@ impl PresenceTracker {
     pub fn connection_count(&self) -> usize {
         self.active_connections.load(Ordering::SeqCst)
     }
-
-    fn disconnect(&self) {
-        self.active_connections.fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 impl Default for PresenceTracker {
@@ -46,13 +48,16 @@ impl Default for PresenceTracker {
 }
 
 /// RAII guard that decrements the connection count on drop.
-pub struct ConnectionGuard<'a> {
-    tracker: &'a PresenceTracker,
+///
+/// Owns an `Arc` to the counter, so it is `'static` and can live in
+/// SSE streams or spawned tasks without lifetime issues.
+pub struct ConnectionGuard {
+    counter: Arc<AtomicUsize>,
 }
 
-impl Drop for ConnectionGuard<'_> {
+impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        self.tracker.disconnect();
+        self.counter.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

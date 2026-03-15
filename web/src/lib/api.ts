@@ -15,7 +15,8 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 		body: body ? JSON.stringify(body) : undefined
 	});
 	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-	return res.json();
+	const text = await res.text();
+	return text ? JSON.parse(text) : undefined;
 }
 
 /** GET /api/snapshot - Full system state (spec 16.3). */
@@ -60,12 +61,12 @@ export function setMode(mode: Mode): Promise<{ mode: Mode }> {
 
 /** POST /api/merge-queue/:id/approve */
 export async function approveMerge(id: string): Promise<void> {
-	await fetch(`${BASE}/merge-queue/${id}/approve`, { method: 'POST' });
+	await post(`/merge-queue/${id}/approve`);
 }
 
 /** POST /api/merge-queue/:id/reject */
 export async function rejectMerge(id: string): Promise<void> {
-	await fetch(`${BASE}/merge-queue/${id}/reject`, { method: 'POST' });
+	await post(`/merge-queue/${id}/reject`);
 }
 
 /** POST /api/merge-queue/flush */

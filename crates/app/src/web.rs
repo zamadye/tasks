@@ -4,8 +4,10 @@
 //! The server serves the built frontend as static files and
 //! exposes API endpoints under `/api/`.
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::convert::Infallible;
+use std::task::{Context, Poll};
 
 use axum::{
     Json, Router,
@@ -25,6 +27,7 @@ use tower_http::cors::CorsLayer;
 
 use events::Actor;
 use server::mode::Mode;
+use server::presence::ConnectionGuard;
 use server::Server;
 
 /// Shared state for API handlers.
@@ -190,11 +193,11 @@ async fn approve_merge(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let mut server_state = state.server.state.write().await;
-    server_state
-        .merge_queue
-        .approve(&id)
-        .map_err(|e| ApiError::MergeQueue(e.to_string()))?;
+    state
+        .server
+        .approve_merge(&id)
+        .await
+        .map_err(ApiError::Server)?;
     Ok(StatusCode::OK)
 }
 
@@ -203,11 +206,11 @@ async fn reject_merge(
     State(state): State<ApiState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let mut server_state = state.server.state.write().await;
-    server_state
-        .merge_queue
-        .reject(&id)
-        .map_err(|e| ApiError::MergeQueue(e.to_string()))?;
+    state
+        .server
+        .reject_merge(&id)
+        .await
+        .map_err(ApiError::Server)?;
     Ok(StatusCode::OK)
 }
 
@@ -238,11 +241,11 @@ async fn event_stream(
     State(state): State<ApiState>,
     Query(query): Query<EventStreamQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    // Register presence — the connection guard will decrement on drop.
-    let _presence_guard = state.server.presence.connect();
+    // Register presence — the guard must live as long as the stream.
+    let presence_guard = state.server.presence.connect();
 
     let rx = state.server.event_bus.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(move |result| {
+    let inner = BroadcastStream::new(rx).filter_map(move |result| {
         match result {
             Ok(event) => {
                 // Apply filters
@@ -259,11 +262,33 @@ async fn event_stream(
                 let data = serde_json::to_string(event.as_ref()).ok()?;
                 Some(Ok(SseEvent::default().data(data)))
             }
-            Err(_) => None,
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                let data = serde_json::json!({ "type": "stream:lagged", "dropped": n }).to_string();
+                Some(Ok(SseEvent::default().event("lagged").data(data)))
+            }
         }
     });
 
+    let stream = TrackedStream {
+        _guard: presence_guard,
+        inner: Box::pin(inner),
+    };
+
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Wraps an SSE stream and keeps the presence guard alive for the stream's lifetime.
+struct TrackedStream<S> {
+    _guard: ConnectionGuard,
+    inner: Pin<Box<S>>,
+}
+
+impl<S: Stream<Item = Result<SseEvent, Infallible>>> Stream for TrackedStream<S> {
+    type Item = Result<SseEvent, Infallible>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
 }
 
 // --- Error handling ---
