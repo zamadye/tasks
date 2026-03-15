@@ -246,6 +246,74 @@ impl Server {
         state.tasks.get(id).cloned()
     }
 
+    /// Apply a state change from an external event (e.g. session manager).
+    ///
+    /// Updates in-memory state and SQLite but does NOT emit an event,
+    /// since the event already exists in the event log.
+    pub async fn sync_task_state(
+        &self,
+        task_id: &str,
+        new_state: TaskState,
+    ) -> Result<(), ServerError> {
+        let mut state = self.state.write().await;
+        let task = state
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| ServerError::TaskNotFound(task_id.to_string()))?;
+        task.set_state(new_state);
+
+        // Write-through to store
+        if let Some(ref store) = self.store {
+            if let Ok(store) = store.lock() {
+                let _ = store.save_task(task);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle an agent failure — decide whether to retry or mark as failed (spec §13, §18.2).
+    pub async fn handle_agent_failure(
+        &self,
+        task_id: &str,
+        max_retries: u32,
+    ) -> Result<(), ServerError> {
+        let new_state = {
+            let mut state = self.state.write().await;
+            let task = state
+                .tasks
+                .get_mut(task_id)
+                .ok_or_else(|| ServerError::TaskNotFound(task_id.to_string()))?;
+
+            task.retry_count += 1;
+            task.last_failure_at = Some(chrono::Utc::now());
+
+            let new_state = if task.retry_count > max_retries {
+                TaskState::Failed
+            } else {
+                TaskState::Waiting
+            };
+            task.set_state(new_state);
+
+            if let Some(ref store) = self.store {
+                if let Ok(store) = store.lock() {
+                    let _ = store.save_task(task);
+                }
+            }
+
+            new_state
+        };
+
+        let event_type = match new_state {
+            TaskState::Failed => EventType::TaskStateFailed,
+            TaskState::Waiting => EventType::TaskStateWaiting,
+            _ => unreachable!(),
+        };
+        let event = Event::new(event_type, task_id, Actor::System, serde_json::json!({}));
+        self.event_bus.publish(event).await?;
+        Ok(())
+    }
+
     /// Transition a task's state and emit the corresponding event.
     pub async fn set_task_state(
         &self,
@@ -392,6 +460,72 @@ impl Server {
     }
 
     // --- Merge queue (spec Section 7) ---
+
+    /// Approve a merge queue entry (spec Section 7.1).
+    ///
+    /// Updates in-memory state, persists to store, and emits an event.
+    pub async fn approve_merge(
+        &self,
+        entry_id: &str,
+    ) -> Result<(), ServerError> {
+        {
+            let mut state = self.state.write().await;
+            state.merge_queue.approve(entry_id).map_err(|e| {
+                ServerError::StoreError(e.to_string())
+            })?;
+
+            // Write-through to store
+            if let Some(ref store) = self.store {
+                if let Ok(store) = store.lock() {
+                    if let Some(entry) = state.merge_queue.get(entry_id) {
+                        let _ = store.save_merge_entry(entry);
+                    }
+                }
+            }
+        }
+
+        let event = Event::new(
+            EventType::MergeApproved,
+            entry_id,
+            Actor::Human,
+            serde_json::json!({}),
+        );
+        self.event_bus.publish(event).await?;
+        Ok(())
+    }
+
+    /// Reject a merge queue entry (spec Section 7.1).
+    ///
+    /// Updates in-memory state, persists to store, and emits an event.
+    pub async fn reject_merge(
+        &self,
+        entry_id: &str,
+    ) -> Result<(), ServerError> {
+        {
+            let mut state = self.state.write().await;
+            state.merge_queue.reject(entry_id).map_err(|e| {
+                ServerError::StoreError(e.to_string())
+            })?;
+
+            // Write-through to store
+            if let Some(ref store) = self.store {
+                if let Ok(store) = store.lock() {
+                    if let Some(entry) = state.merge_queue.get(entry_id) {
+                        let _ = store.save_merge_entry(entry);
+                    }
+                }
+            }
+        }
+
+        let event = Event::new(
+            EventType::MergeRejected,
+            entry_id,
+            Actor::Human,
+            serde_json::json!({}),
+        );
+        self.event_bus.publish(event).await?;
+        Ok(())
+    }
 
     /// Flush the merge queue (spec Section 6.2).
     ///
@@ -729,5 +863,57 @@ mod tests {
         // Now state should be populated
         assert!(server.get_project("p1").await.is_some());
         assert!(server.get_task("t1").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn handle_failure_retries_when_under_max() {
+        let store = tasks_store::Store::open_memory().unwrap();
+        let dir = tempdir().unwrap();
+        let event_store = EventStore::new(dir.path());
+        let bus = EventBus::new(event_store, 64);
+        let server = Server::with_store(bus, store);
+        let mut rx = server.event_bus.subscribe();
+
+        let project = Project::new("p1", "owner/repo");
+        server.add_project(project).await;
+        let task = Task::new("t1", TaskSource::Internal, "Test", "p1");
+        server.add_task(task).await.unwrap();
+        let _ = rx.recv().await; // drain TaskCreated
+
+        server.handle_agent_failure("t1", 3).await.unwrap();
+
+        let task = server.get_task("t1").await.unwrap();
+        assert_eq!(task.state, TaskState::Waiting);
+        assert_eq!(task.retry_count, 1);
+        assert!(task.last_failure_at.is_some());
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.event_type, EventType::TaskStateWaiting);
+    }
+
+    #[tokio::test]
+    async fn handle_failure_fails_when_retries_exhausted() {
+        let store = tasks_store::Store::open_memory().unwrap();
+        let dir = tempdir().unwrap();
+        let event_store = EventStore::new(dir.path());
+        let bus = EventBus::new(event_store, 64);
+        let server = Server::with_store(bus, store);
+        let mut rx = server.event_bus.subscribe();
+
+        let project = Project::new("p1", "owner/repo");
+        server.add_project(project).await;
+        let mut task = Task::new("t1", TaskSource::Internal, "Test", "p1");
+        task.retry_count = 3;
+        server.add_task(task).await.unwrap();
+        let _ = rx.recv().await; // drain TaskCreated
+
+        server.handle_agent_failure("t1", 3).await.unwrap();
+
+        let task = server.get_task("t1").await.unwrap();
+        assert_eq!(task.state, TaskState::Failed);
+        assert_eq!(task.retry_count, 4);
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.event_type, EventType::TaskStateFailed);
     }
 }
