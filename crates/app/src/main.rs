@@ -16,10 +16,12 @@ use tasks_store::Store;
 use config::AppConfig;
 
 fn data_dir() -> String {
-    std::env::var("TASKS_DATA_DIR").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{home}/.tasks")
-    })
+    std::env::var("TASKS_DATA_DIR")
+        .map(|p| config::expand_tilde(&p))
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            format!("{home}/.tasks")
+        })
 }
 
 fn open_store() -> Result<Store, String> {

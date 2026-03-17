@@ -2,6 +2,21 @@
 
 use std::time::Duration;
 
+/// Expand tilde at the start of a path to the user's home directory.
+///
+/// Shell doesn't expand `~` in environment variable values, so we handle it manually.
+/// Only expands `~` at the start of the path (e.g., `~/.tasks` -> `/home/user/.tasks`).
+pub fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{home}/{rest}")
+    } else if path == "~" {
+        std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+    } else {
+        path.to_string()
+    }
+}
+
 /// Top-level app configuration.
 pub struct AppConfig {
     /// Data directory (default: `~/.tasks`).
@@ -45,10 +60,12 @@ impl AppConfig {
     pub fn from_env() -> Result<Self, String> {
         // Load .env file if it exists — doesn't error if missing.
         dotenvy::dotenv().ok();
-        let data_dir = std::env::var("TASKS_DATA_DIR").unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            format!("{home}/.tasks")
-        });
+        let data_dir = std::env::var("TASKS_DATA_DIR")
+            .map(|p| expand_tilde(&p))
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                format!("{home}/.tasks")
+            });
 
         let github_token = std::env::var("GITHUB_TOKEN")
             .map_err(|_| "GITHUB_TOKEN environment variable not set".to_string())?;
@@ -127,5 +144,39 @@ impl AppConfig {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(4800),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_tilde_with_path() {
+        // SAFETY: Test runs single-threaded, safe to modify env
+        unsafe { std::env::set_var("HOME", "/home/testuser") };
+        assert_eq!(expand_tilde("~/.tasks"), "/home/testuser/.tasks");
+        assert_eq!(expand_tilde("~/foo/bar"), "/home/testuser/foo/bar");
+    }
+
+    #[test]
+    fn expand_tilde_just_tilde() {
+        // SAFETY: Test runs single-threaded, safe to modify env
+        unsafe { std::env::set_var("HOME", "/home/testuser") };
+        assert_eq!(expand_tilde("~"), "/home/testuser");
+    }
+
+    #[test]
+    fn expand_tilde_no_tilde() {
+        assert_eq!(expand_tilde("/absolute/path"), "/absolute/path");
+        assert_eq!(expand_tilde("relative/path"), "relative/path");
+        assert_eq!(expand_tilde(""), "");
+    }
+
+    #[test]
+    fn expand_tilde_middle_tilde_unchanged() {
+        // Tilde in the middle of a path should not be expanded
+        assert_eq!(expand_tilde("/path/~/.tasks"), "/path/~/.tasks");
+        assert_eq!(expand_tilde("foo~bar"), "foo~bar");
     }
 }
