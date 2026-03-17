@@ -295,7 +295,7 @@ function BlockView({ block }: { block: ParsedBlock }) {
 // Session view — live agent output + chat
 // ---------------------------------------------------------------------------
 
-function SessionView({ taskId }: { taskId: string }) {
+function SessionView({ taskId, readOnly = false }: { taskId: string; readOnly?: boolean }) {
   const [rawEvents, setRawEvents] = useState<Event[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -314,6 +314,9 @@ function SessionView({ taskId }: { taskId: string }) {
       );
     });
 
+    // Only subscribe to live events for active sessions
+    if (readOnly) return;
+
     const source = subscribeEvents({ task_id: taskId });
     source.onmessage = (msg) => {
       try {
@@ -326,7 +329,7 @@ function SessionView({ taskId }: { taskId: string }) {
       }
     };
     return () => source.close();
-  }, [taskId]);
+  }, [taskId, readOnly]);
 
   const blocks = parseAgentEvents(rawEvents);
 
@@ -371,24 +374,26 @@ function SessionView({ taskId }: { taskId: string }) {
         </div>
 
         {/* Chat input */}
-        <form
-          className="flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleSend();
-          }}
-        >
-          <Input
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            placeholder="Send a message to the agent..."
-            className="flex-1"
-            disabled={sending}
-          />
-          <Button type="submit" size="icon" disabled={sending || !chatInput.trim()}>
-            <Send className="h-4 w-4" />
-          </Button>
-        </form>
+        {!readOnly && (
+          <form
+            className="flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleSend();
+            }}
+          >
+            <Input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              placeholder="Send a message to the agent..."
+              className="flex-1"
+              disabled={sending}
+            />
+            <Button type="submit" size="icon" disabled={sending || !chatInput.trim()}>
+              <Send className="h-4 w-4" />
+            </Button>
+          </form>
+        )}
       </CardContent>
     </Card>
   );
@@ -420,6 +425,13 @@ export function TaskDetailPage() {
     task?.state === "running" ||
     task?.state === "question" ||
     task?.state === "testing";
+
+  // Show session history for tasks that have completed work
+  const hasSessionHistory =
+    task?.state === "awaiting_merge" ||
+    task?.state === "completed" ||
+    task?.state === "conflict" ||
+    task?.state === "failed";
 
   useEffect(() => {
     if (!id) return;
@@ -494,9 +506,12 @@ export function TaskDetailPage() {
         </div>
       </div>
 
-      {/* Session view — the main content when active */}
+      {/* Session view — live when active, read-only for completed work */}
       {isSessionActive && id && (
         <SessionView taskId={id} />
+      )}
+      {!isSessionActive && hasSessionHistory && id && (
+        <SessionView taskId={id} readOnly />
       )}
 
       {/* Collapsible details */}
