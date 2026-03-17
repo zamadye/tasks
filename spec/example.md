@@ -1,6 +1,11 @@
 # Symphony Service Specification
 
-Status: Draft v1 (language-agnostic)
+> **Note**: This document is an earlier version of the specification when the project was called
+> "Symphony" and used Linear as the issue tracker. The current specification is `spec.md` which
+> describes the "Tasks" platform using GitHub. This file is retained for historical reference but
+> should not be used as authoritative documentation.
+
+Status: Deprecated (superseded by spec.md)
 
 Purpose: Define a service that orchestrates coding agents to get project work done.
 

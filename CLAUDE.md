@@ -5,10 +5,13 @@ A human-in-the-loop platform that orchestrates coding agents to get project work
 ## Project structure
 
 - `spec/` — Specification documents
-  - `spec.md` — Main platform spec
+  - `spec.md` — Main platform spec (source of truth)
   - `session-runtime.md` — Session runtime architecture (container provider, supervisor, protocol)
   - `github.md` — GitHub integration: normalized model, GraphQL queries, polling
-  - `example.md` — Worked example of the system in action
+  - `example.md` — Historical: earlier "Symphony" spec (deprecated, for reference only)
+- `docs/` — Additional documentation
+  - `spec-organization.md` — Conventions for spec documents
+  - `plans/` — Implementation plans for specific features
 - `crates/` — Rust crates (host-side server)
   - `app/` — Binary entry point: startup, run loops, component wiring
   - `events/` — Event system: append-only log, pub/sub
