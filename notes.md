@@ -1,32 +1,26 @@
 # Repo Assist Memory — iamnbutler/tasks
 
-## Last run: 2026-03-17 (run 23214828278)
-Tasks 8 + 2 + 11 executed.
+## Last run: 2026-03-17 (run 23216632012)
+Tasks 1 + 2 + 11 executed.
 
 ## Labelling
-All 22 original open issues labelled on 2026-03-17 (run 23214476363).
-New GPUI sub-issues (#153–#167) created 2026-03-17 — need labelling next run.
-Cursor: should process #148-#152 and #153-#167 next run.
+All issues labelled as of 2026-03-17. GPUI #153–#155, #157–#164, #166–#167 labelled `enhancement` this run.
 
-## PRs created
-- `repo-assist/perf-parallel-poller-20260317`: Parallel issue+PR polling in RepoPoller
-  (tokio::try_join!, updated poller tests to use body_string_contains matchers)
+## RA PRs
+- #169: perf-parallel-poller (draft, open)
 
 ## comments_made
-- #43: Jitter implementation options (deterministic hash-based vs next_retry_at field)
-- #147: Root cause + fix path for project ID display (task.project shows UUID, need to resolve via snapshot.projects)
+- #43: Jitter options (run 23214828278)
+- #147: Project ID fix path (run 23214828278)
+- #47: Usage struct investigation (run 23216632012)
+- #91: Skip label design notes (run 23216632012)
 
-## Issues created (may not be findable via search — safeoutputs label may not exist)
-- "[Repo Assist] Monthly Activity 2026-03" — created run 23214828278
-
-## Project notes
-- Rust codebase, apple/container isolation, Claude-backed orchestrator
-- All components exist; critical path to e2e: #144, #143, #46, #147
-- spec/spec.md says "TypeScript" but impl is Rust
-- GPUI desktop app work started (epic #145), many sub-issues #153-#167
+## Key facts
+- Rust codebase; 20+ open agent PRs closing many issues
+- Issues with agent PRs: #16→#122, #28→#131, #42→#112, #43→#101, #47→#118, #49→#141, #53→#142, #84→#139, #86→#137, #91→#134
+- Monthly Activity 2026-03 issue created run 23216632012
 
 ## Backlog
-- Label #148-#152 and GPUI issues #153-#167 (many are unlabelled)
-- Investigate #144 (unique branch names for tasks) — fixable bug
-- Investigate #143 (remove origin branch when throwing away work) — fixable bug
-- Comment on #91, #86, #84, #48, #47 — no RA comments yet
+- Comment on #86, #84, #29 (no RA comments; agent PRs exist for #84 and #86)
+- Check CI status of open agent PRs (Task 4/6)
+- Label new issues as they arrive
